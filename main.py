@@ -3,6 +3,63 @@ import math
 import random
 import string
 import os
+import requests  # <-- NEW: For downloading files
+import sys       # <-- NEW: For exiting script on failure
+
+# --- Helper Function for Downloading ---
+def download_file(url, local_path):
+    """Downloads a file from a URL to a local path."""
+    try:
+        response = requests.get(url, stream=True)
+        if response.status_code == 200:
+            with open(local_path, 'wb') as f:
+                f.write(response.content)
+            print(f"Successfully downloaded {local_path}")
+            return True
+        else:
+            print(f"Error: Got status code {response.status_code} for {url}")
+            return False
+    except requests.exceptions.RequestException as e:
+        print(f"Error downloading {url}: {e}")
+        return False
+
+# --- Asset Setup and Download ---
+ASSET_PATH = 'data'
+BASE_GITHUB_URL = "https://raw.githubusercontent.com/whelxi/Zumadle/main/Data/"
+REQUIRED_FILES = [
+    "background.png", 
+    "cannon.png", 
+    "keypress.mp3", 
+    "pop.mp3", 
+    "word_list_5.txt"
+]
+
+# 1. Check if 'data' folder exists
+if not os.path.exists(ASSET_PATH):
+    try:
+        os.makedirs(ASSET_PATH)
+        print(f"Created directory: {ASSET_PATH}")
+    except OSError as e:
+        print(f"Error creating directory {ASSET_PATH}: {e}")
+        sys.exit() # Can't continue if we can't make the folder
+
+# 2. Check and download each file
+all_files_present = True
+for filename in REQUIRED_FILES:
+    local_path = os.path.join(ASSET_PATH, filename)
+    if not os.path.exists(local_path):
+        print(f"File not found: {filename}. Attempting download...")
+        file_url = BASE_GITHUB_URL + filename
+        if not download_file(file_url, local_path):
+            all_files_present = False
+            print(f"Failed to download required file: {filename}.")
+    
+if not all_files_present:
+    print("One or more required files failed to download. Please check your internet connection or the GitHub URL.")
+    sys.exit() # Exit if any file failed
+
+print("All required files are present. Starting game...")
+# --- End of Download Logic ---
 
 # --- Initialization ---
 pygame.init()
