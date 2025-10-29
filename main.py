@@ -17,7 +17,7 @@ ACTUAL_SCREEN_WIDTH, ACTUAL_SCREEN_HEIGHT = screen_info.current_w, screen_info.c
 
 WIDTH, HEIGHT = ACTUAL_SCREEN_WIDTH, ACTUAL_SCREEN_HEIGHT
 screen = pygame.display.set_mode((WIDTH, HEIGHT), pygame.FULLSCREEN)
-pygame.display.set_caption("Zuma Wordle Clone - 2-Hitbox System")
+pygame.display.set_caption("Zuma Wordle Clone - Faster Speed")
 clock = pygame.time.Clock()
 FPS = 60
 pygame.font.init()
@@ -36,12 +36,20 @@ BLACK = (0, 0, 0)
 WHITE = (255, 255, 255)
 RED = (255, 0, 0)
 LASER_COLOR = (255, 0, 0, 150)
+WIN_SCREEN_BG = (0, 0, 30) # Dark Blue
 
 COLOR_DEFAULT = WHITE
-COLOR_PREFIX_2 = (255, 240, 100) # Bright Yellow
-COLOR_PREFIX_3 = (170, 255, 170) # Bright Green
-COLOR_PREFIX_4 = (150, 220, 255) # Bright Blue
 COLOR_WORD_5 = (255, 200, 255) # Light Purple
+
+# --- NEW: Color scheme for 4-letter spawn groups ---
+COLOR_GROUP_1 = (255, 180, 180) # Light Red
+COLOR_GROUP_2 = (180, 255, 180) # Light Green
+COLOR_GROUP_3 = (180, 180, 255) # Light Blue
+COLOR_GROUP_4 = (255, 255, 180) # Light Yellow
+COLOR_GROUP_5 = (255, 180, 255) # Light Magenta
+COLOR_GROUP_6 = (180, 255, 255) # Light Cyan
+SPAWN_GROUP_COLORS = [COLOR_GROUP_1, COLOR_GROUP_2, COLOR_GROUP_3, COLOR_GROUP_4, COLOR_GROUP_5, COLOR_GROUP_6]
+current_spawn_color_index = 0
 
 
 # --- Asset Loading ---
@@ -69,7 +77,8 @@ except pygame.error as e:
 # --- Word Game Variables ---
 def load_word_list(path, filename):
     word_set = set()
-    prefix_set = set()
+    prefix_set_all = set() # For coloring (2, 3, 4 letters)
+    prefix_set_4 = set()   # For spawning (4 letters only)
     file_path = os.path.join(path, filename)
 
     try:
@@ -78,26 +87,58 @@ def load_word_list(path, filename):
                 word = line.strip().upper()
                 if len(word) == 5:
                     word_set.add(word)
-                    prefix_set.add(word[0:2])
-                    prefix_set.add(word[0:3])
-                    prefix_set.add(word[0:4])
+                    prefix_set_all.add(word[0:2])
+                    prefix_set_all.add(word[0:3])
+                    prefix_set_all.add(word[0:4])
+                    prefix_set_4.add(word[0:4]) 
 
         print(f"Successfully loaded {len(word_set)} 5-letter words.")
-        print(f"Successfully generated {len(prefix_set)} 2,3,4-letter prefixes.")
+        print(f"Successfully generated {len(prefix_set_all)} 2,3,4-letter prefixes (for coloring).")
+        print(f"Successfully generated {len(prefix_set_4)} 4-letter prefixes (for spawning).")
+
 
     except FileNotFoundError:
         print(f"Warning: '{filename}' not found in '{path}' folder.")
         print("Using a small fallback word list.")
         word_set = {"PYTHON", "GAMES", "ZUMAS", "HELLO", "WORLD", "SCORE", "POINT", "CHAIN", "BLAST", "MOUSE", "CLICK", "WORDS", "EPICS", "WHALE"}
-        prefix_set = {"PY", "PYT", "PYTH", "GA", "GAM", "GAME", "WHAL", "EPIC"}
+        prefix_set_all = {"PY", "PYT", "PYTH", "GA", "GAM", "GAME", "WHAL", "EPIC"}
+        prefix_set_4 = {"PYTH", "GAME", "WHAL", "EPIC"}
 
-    return word_set, prefix_set
+    return word_set, prefix_set_all, prefix_set_4
 
-VALID_WORDS, PREFIX_SET = load_word_list(ASSET_PATH, 'word_list_5.txt')
+VALID_WORDS, PREFIX_SET, PREFIX_SET_4 = load_word_list(ASSET_PATH, 'word_list_5.txt')
 SCORE = 0
+spawn_queue = [] # Will now store (letter, color) tuples
 
 def random_letter():
+    """DEPRECATED"""
     return random.choice(string.ascii_uppercase)
+
+def get_next_spawn_data():
+    """
+    Pulls data from a queue populated by random 4-LETTER prefixes.
+    Returns: (letter, color) tuple
+    """
+    global spawn_queue, current_spawn_color_index
+    if not spawn_queue:
+        try:
+            # Queue is empty, refill it
+            new_prefix = random.choice(list(PREFIX_SET_4)) 
+            
+            # Get the next color from the scheme
+            color = SPAWN_GROUP_COLORS[current_spawn_color_index % len(SPAWN_GROUP_COLORS)]
+            current_spawn_color_index += 1 # Increment for next time
+            
+            # Populate queue with (letter, color) tuples
+            for letter in new_prefix:
+                spawn_queue.append((letter, color))
+
+        except IndexError:
+            # Fallback if PREFIX_SET_4 is empty
+            return (random.choice(string.ascii_uppercase), COLOR_DEFAULT)
+    
+    # Return the next (letter, color) tuple from the front of the queue
+    return spawn_queue.pop(0)
 
 # --- Game Variables (all based on BASE_RESOLUTION) ---
 BALL_RADIUS_BASE = 30
@@ -114,16 +155,17 @@ LAUNCHER_POS_BASE = (BASE_RESOLUTION_WIDTH // 2, BASE_RESOLUTION_HEIGHT // 2)
 LAUNCHER_POS = scale_point(LAUNCHER_POS_BASE)
 
 # --- Path and Speed Settings ---
-CHAIN_SPEED = 0.2
+CHAIN_SPEED = 0.3 
 PATH_POINT_SPACING = 8
 BALL_SPACING_ON_PATH = BALL_DIAMETER_BASE / PATH_POINT_SPACING
 CATCH_UP_SPEED_FACTOR = 0.03
 MAX_EXTRA_SPEED = 0.3
 GAME_OVER = False
-STARTING_BALLS = 30
+GAME_WON = False # Game Win state
+STARTING_BALLS = 100
 
-CHAIN_DECELERATION = 0.0001
-MIN_CHAIN_SPEED = 0.02
+CHAIN_DECELERATION = 0.0002
+MIN_CHAIN_SPEED = 0.08
 
 # --- Path Generation Function (uses BASE_RESOLUTION coordinates) ---
 def generate_path_points(rough_path_base, spacing_base):
@@ -156,10 +198,11 @@ PATH_POINTS_BASE = generate_path_points(ROUGH_PATH_BASE, PATH_POINT_SPACING)
 
 # --- Ball Sprite Class ---
 class Ball(pygame.sprite.Sprite):
-    def __init__(self, letter, path_index):
+    def __init__(self, letter, path_index, initial_color=WHITE):
         super().__init__()
         self.letter = letter
-        self.color = WHITE
+        self.base_color = initial_color  # The color it should be normally
+        self.color = self.base_color     # The color currently displayed
         self.path_index = float(path_index)
 
         self.image = pygame.Surface((BALL_DIAMETER, BALL_DIAMETER), pygame.SRCALPHA)
@@ -168,21 +211,17 @@ class Ball(pygame.sprite.Sprite):
         self.x_base, self.y_base = 0, 0
         self.rect = self.image.get_rect()
         
-        # --- CHAIN HITBOX LOGIC ---
         self.hitbox_size = int(BALL_RADIUS * 0.8) 
         self.hitbox_offset = int(BALL_RADIUS * 0.75) 
         self.front_hitbox = pygame.Rect(0, 0, self.hitbox_size, self.hitbox_size)
         self.back_hitbox = pygame.Rect(0, 0, self.hitbox_size, self.hitbox_size)
         
-        # --- SHOT HITBOX LOGIC ---
         self.collision_radius = scale_value(BALL_RADIUS_BASE * HITBOX_SCALE_FACTOR_SHOT)
         shot_hitbox_size = int(self.collision_radius * 2)
         self.shot_hitbox = pygame.Rect(0, 0, shot_hitbox_size, shot_hitbox_size)
         
         self.set_pos_from_path_index()
-
         self.dx, self.dy, self.speed = 0, 0, 0
-
 
     def re_render_image(self):
         self.image.fill((0,0,0,0))
@@ -204,16 +243,17 @@ class Ball(pygame.sprite.Sprite):
         if idx >= len(PATH_POINTS_BASE):
             self.x_base, self.y_base = PATH_POINTS_BASE[-1]
             global GAME_OVER
-            GAME_OVER = True
+            # Don't set GAME_OVER if we won
+            if not GAME_WON:
+                GAME_OVER = True
         elif idx < 0:
             self.x_base, self.y_base = PATH_POINTS_BASE[0]
         else:
             self.x_base, self.y_base = PATH_POINTS_BASE[idx]
 
         self.rect.center = scale_point((int(self.x_base), int(self.y_base)))
-        self.shot_hitbox.center = self.rect.center # Update shot hitbox too
+        self.shot_hitbox.center = self.rect.center
 
-        # --- HITBOX UPDATE LOGIC ---
         p1_idx = max(0, idx - int(BALL_SPACING_ON_PATH))
         p2_idx = min(len(PATH_POINTS_BASE) - 1, idx + int(BALL_SPACING_ON_PATH))
 
@@ -244,14 +284,10 @@ class Ball(pygame.sprite.Sprite):
         self.front_hitbox.center = (int(front_center_x), int(front_center_y))
         self.back_hitbox.center = (int(back_center_x), int(back_center_y))
 
-
     def update(self):
-        # This update is only for shot balls
         if self.speed > 0:
             self.rect.x += self.dx
             self.rect.y += self.dy
-            
-            # <-- ADDED: Update the shot hitbox as the ball moves -->
             self.shot_hitbox.center = self.rect.center
             
             if (self.rect.x < -BALL_DIAMETER or self.rect.x > WIDTH + BALL_DIAMETER or
@@ -313,80 +349,68 @@ class Launcher:
 def get_angle(pos1, pos2):
     return math.atan2(pos2[1] - pos1[1], pos2[0] - pos1[0])
 
-# This function is no longer used for chain collisions
 def custom_collide_circle(sprite1, sprite2):
     dist_sq = (sprite1.rect.center[0] - sprite2.rect.center[0])**2 + \
               (sprite1.rect.center[1] - sprite2.rect.center[1])**2
     return dist_sq < (sprite1.collision_radius + sprite2.collision_radius)**2
 
-def check_matches(chain, start_index):
-    """Checks only for 5-letter words for DELETION."""
+def check_matches(chain):
+    """
+    Checks the ENTIRE chain for the FIRST 5-letter word.
+    """
     if not chain or len(chain) < 5:
         return 0, -1, -1
 
-    for i in range(max(0, start_index - 4), min(start_index + 1, len(chain) - 4)):
-        if i + 5 > len(chain):
-            continue
-
-        word = ""
-        for j in range(i, i + 5):
-            word += chain[j].letter
+    i = 0
+    while i <= len(chain) - 5: 
+        word = "".join([chain[j].letter for j in range(i, i + 5)])
 
         if word in VALID_WORDS:
             global SCORE
             SCORE += 100
             print(f"Word Found: {word}! Score: {SCORE}")
             pop_sound.play()
-            return 5, i, i + 4 # Return the first match found
+            return 5, i, i + 4 
+
+        i += 1 
 
     return 0, -1, -1
 
-
 def update_chain_colors(chain):
-    """Iterates through the chain and colors it."""
+    """
+    Iterates through the chain.
+    Sets 5-letter words to purple.
+    Resets all other balls to their base_color.
+    """
+    # First, reset all balls to their base color
+    for ball in chain:
+        ball.set_color(ball.base_color)
+
+    # Now, iterate and find 5-letter words to override the color
     i = 0
     while i < len(chain):
         match_len = 1
-        color_to_set = COLOR_DEFAULT
-
+        color_to_set = None # Signal "no change"
+ 
         if i + 5 <= len(chain):
             word = "".join([chain[j].letter for j in range(i, i + 5)])
             if word in VALID_WORDS:
                 match_len = 5
                 color_to_set = COLOR_WORD_5
-
-        if match_len == 1 and i + 4 <= len(chain):
-            word = "".join([chain[j].letter for j in range(i, i + 4)])
-            if word in PREFIX_SET:
-                match_len = 4
-                color_to_set = COLOR_PREFIX_4
-
-        if match_len == 1 and i + 3 <= len(chain):
-            word = "".join([chain[j].letter for j in range(i, i + 3)])
-            if word in PREFIX_SET:
-                match_len = 3
-                color_to_set = COLOR_PREFIX_3
-
-        if match_len == 1 and i + 2 <= len(chain):
-            word = "".join([chain[j].letter for j in range(i, i + 2)])
-            if word in PREFIX_SET:
-                match_len = 2
-                color_to_set = COLOR_PREFIX_2
-
-        for j in range(i, i + match_len):
-            chain[j].set_color(color_to_set)
-
+ 
+        if color_to_set: # If we found a 5-letter word
+            for j in range(i, i + match_len):
+                chain[j].set_color(color_to_set)
+ 
         i += match_len
 
 
 def shift_chain(chain, from_index, shift_amount_base):
-    """Shifts balls *within* a single chain."""
     for i in range(from_index, len(chain)):
         chain[i].path_index -= shift_amount_base
         chain[i].set_pos_from_path_index()
 
 def create_gap(chain, at_index, gap_size_base):
-    """Pushes balls forward and backward from an index to create a gap."""
     half_gap = gap_size_base / 2.0
     
     for i in range(at_index):
@@ -408,9 +432,10 @@ launcher = Launcher(LAUNCHER_POS_BASE, cannon_base_image)
 
 chain_list = []
 start_index = 0
-for i in range(STARTING_BALLS):
+for i in range(STARTING_BALLS): # <-- This is now 20
     index = start_index + (i * BALL_SPACING_ON_PATH)
-    new_ball = Ball(random_letter(), index)
+    letter, color = get_next_spawn_data()
+    new_ball = Ball(letter, index, color) 
     all_sprites.add(new_ball)
     chain_ball_sprites.add(new_ball)
     chain_list.append(new_ball)
@@ -418,7 +443,8 @@ for i in range(STARTING_BALLS):
 SPAWN_DELAY = int((BALL_DIAMETER_BASE / (CHAIN_SPEED * PATH_POINT_SPACING)) * (1000 / FPS))
 last_spawn_time = pygame.time.get_ticks()
 
-update_chain_colors(chain_list)
+# update_chain_colors(chain_list) # Keep initial chain its base color
+
 
 while running:
     # --- Event Handling ---
@@ -428,17 +454,29 @@ while running:
         elif event.type == pygame.KEYDOWN:
             if event.key == pygame.K_ESCAPE:
                 running = False
+            
             if event.key >= pygame.K_a and event.key <= pygame.K_z:
-                if not GAME_OVER:
+                if not GAME_OVER and not GAME_WON:
                     keypress_sound.play()
                     letter = pygame.key.name(event.key).upper()
                     mouse_pos = pygame.mouse.get_pos()
                     angle = get_angle(LAUNCHER_POS, mouse_pos)
-                    new_shot = Ball(letter, 0)
+                    # <-- **SHOT SPEED INCREASED** -->
+                    new_shot = Ball(letter, 0) 
                     new_shot.rect.center = LAUNCHER_POS
-                    new_shot.shoot(angle, 20)
+                    new_shot.shoot(angle, 35) # <-- Was 20
                     all_sprites.add(new_shot)
 
+    # --- Handle Win Screen ---
+    if GAME_WON:
+        screen.fill(WIN_SCREEN_BG)
+        win_text = GAME_FONT.render(f"YOU WIN! - Final Score: {SCORE} - Press ESC to quit", True, COLOR_GROUP_2)
+        screen.blit(win_text, (WIDTH // 2 - win_text.get_width() // 2, HEIGHT // 2 - win_text.get_height() // 2))
+        pygame.display.flip()
+        clock.tick(FPS)
+        continue
+
+    # --- Handle Game Over Screen ---
     if GAME_OVER:
         screen.fill(BLACK)
         game_over_text = GAME_FONT.render(f"GAME OVER - Score: {SCORE} - Press ESC to quit", True, RED)
@@ -448,25 +486,24 @@ while running:
         continue
 
     # --- Game Logic ---
-
     if CHAIN_SPEED > MIN_CHAIN_SPEED:
         CHAIN_SPEED -= CHAIN_DECELERATION
     else:
         CHAIN_SPEED = MIN_CHAIN_SPEED
 
-    # --- Spawning Logic ---
-    current_time = pygame.time.get_ticks()
-    current_spawn_delay = int((BALL_DIAMETER_BASE / (CHAIN_SPEED * PATH_POINT_SPACING)) * (1000 / FPS))
+    # --- Spawning Logic (DISABLED FOR TESTING) ---
+    # current_time = pygame.time.get_ticks()
+    # current_spawn_delay = int((BALL_DIAMETER_BASE / (CHAIN_SPEED * PATH_POINT_SPACING)) * (1000 / FPS))
 
-    if current_time - last_spawn_time > current_spawn_delay:
-        if not chain_list or chain_list[-1].path_index >= BALL_SPACING_ON_PATH:
-            new_letter = random_letter()
-            new_ball = Ball(new_letter, 0.0)
-            all_sprites.add(new_ball)
-            chain_ball_sprites.add(new_ball)
-            chain_list.append(new_ball)
-            last_spawn_time = current_time
-            update_chain_colors(chain_list)
+    # if current_time - last_spawn_time > current_spawn_delay:
+    #     if not chain_list or chain_list[-1].path_index >= BALL_SPACING_ON_PATH:
+    #         letter, color = get_next_spawn_data()
+    #         new_ball = Ball(letter, 0.0, color)
+    #         all_sprites.add(new_ball)
+    #         chain_ball_sprites.add(new_ball)
+    #         chain_list.append(new_ball)
+    #         last_spawn_time = current_time
+    #         update_chain_colors(chain_list) 
 
     # --- Shot Ball Update ---
     shot_balls_list = [s for s in all_sprites if s not in chain_ball_sprites]
@@ -474,34 +511,33 @@ while running:
         shot.update()
 
     # --- Chain Movement Logic ---
-    for j, ball in enumerate(chain_list):
-        if j == 0:
-            ball.path_index += CHAIN_SPEED
-        else:
-            ball_in_front = chain_list[j-1]
-            target_index = ball_in_front.path_index - BALL_SPACING_ON_PATH
-            dist = target_index - ball.path_index
-
-            if dist > 0:
-                move_speed = CHAIN_SPEED + min(dist * CATCH_UP_SPEED_FACTOR, MAX_EXTRA_SPEED)
-                if ball.path_index + move_speed >= target_index:
-                    ball.path_index = target_index
-                else:
-                    ball.path_index += move_speed
+    # Only move the chain if it's not empty
+    if chain_list:
+        for j, ball in enumerate(chain_list):
+            if j == 0:
+                ball.path_index += CHAIN_SPEED
             else:
-                ball.path_index = target_index
+                ball_in_front = chain_list[j-1]
+                target_index = ball_in_front.path_index - BALL_SPACING_ON_PATH
+                dist = target_index - ball.path_index
 
-        ball.set_pos_from_path_index()
+                if dist > 0:
+                    move_speed = CHAIN_SPEED + min(dist * CATCH_UP_SPEED_FACTOR, MAX_EXTRA_SPEED)
+                    if ball.path_index + move_speed >= target_index:
+                        ball.path_index = target_index
+                    else:
+                        ball.path_index += move_speed
+                else:
+                    ball.path_index = target_index
+
+            ball.set_pos_from_path_index()
 
     # --- Collision and Insertion Logic ---
     for shot in shot_balls_list[:]:
         hit_ball = None
-        hit_type = None # 'front' or 'back'
+        hit_type = None 
 
-        # Manual collision check against our custom hitboxes
         for ball in chain_ball_sprites:
-            
-            # Check against shot_hitbox instead of shot.rect
             if ball.back_hitbox.colliderect(shot.shot_hitbox):
                 hit_ball = ball
                 hit_type = 'back'
@@ -520,16 +556,17 @@ while running:
                 continue 
 
             if hit_type == 'back':
-                insert_at_index = ball_index + 1 # Insert AFTER
-            else: # hit_type == 'front'
-                insert_at_index = ball_index # Insert BEFORE
-
-            # --- Gap Creation and Insertion ---
-            half_spacing = BALL_SPACING_ON_PATH / 2.0
+                insert_at_index = ball_index + 1
+            else: 
+                insert_at_index = ball_index 
 
             if insert_at_index == 0:
                 shift_chain(chain_list, 0, BALL_SPACING_ON_PATH) 
-                new_path_index = chain_list[0].path_index + BALL_SPACING_ON_PATH 
+                # This check is tricky. Let's assume the first ball's index is > 0
+                if chain_list:
+                    new_path_index = chain_list[0].path_index + BALL_SPACING_ON_PATH
+                else:
+                    new_path_index = BALL_SPACING_ON_PATH # Just an emergency fallback
             
             elif insert_at_index == len(chain_list):
                 new_path_index = chain_list[-1].path_index - BALL_SPACING_ON_PATH
@@ -538,32 +575,53 @@ while running:
                 create_gap(chain_list, insert_at_index, BALL_SPACING_ON_PATH)
                 new_path_index = chain_list[insert_at_index - 1].path_index - BALL_SPACING_ON_PATH
 
-            inserted_ball = Ball(shot.letter, new_path_index)
+            inserted_ball = Ball(shot.letter, new_path_index, shot.base_color)
 
             chain_list.insert(insert_at_index, inserted_ball)
             all_sprites.add(inserted_ball)
             chain_ball_sprites.add(inserted_ball)
 
             # --- Combo Logic ---
-            check_index = insert_at_index
-
             while True:
-                count, start_idx, end_idx = check_matches(chain_list, check_index)
+                count, start_idx, end_idx = check_matches(chain_list)
 
                 if count >= 5:
                     for j in range(start_idx, end_idx + 1):
                         chain_list[j].kill()
 
                     del chain_list[start_idx : end_idx + 1]
-
-                    if start_idx < len(chain_list):
-                        check_index = start_idx
-                    else:
-                        break
+                    
+                    # <-- **NEW ROLLBACK LOGIC** ---
+                    # Check if a gap was created in the middle of the chain
+                    if start_idx > 0 and start_idx < len(chain_list):
+                        ball_in_front = chain_list[start_idx - 1] # Last ball of leading chain
+                        ball_behind = chain_list[start_idx]   # First ball of trailing chain
+                        
+                        # Calculate the target position for the ball in front
+                        target_path_index = ball_behind.path_index + BALL_SPACING_ON_PATH
+                        
+                        # Calculate how far back we need to move
+                        distance_to_move_back = ball_in_front.path_index - target_path_index
+                        
+                        if distance_to_move_back > 0:
+                            # Move all balls in the leading chain (from 0 to start_idx-1)
+                            # backward by this amount instantly.
+                            print(f"Rolling back leading chain by {distance_to_move_back} units.")
+                            for i in range(start_idx):
+                                chain_list[i].path_index -= distance_to_move_back
+                                chain_list[i].set_pos_from_path_index() # Update positions
+                    # --- **END OF NEW ROLLBACK LOGIC** ---
                 else:
-                    break
+                    break 
+            
+            update_chain_colors(chain_list) 
 
-            update_chain_colors(chain_list)
+    # --- Check for Win Condition ---
+    if not chain_list:
+        # If chain is empty, check if any shot balls are still flying
+        shot_balls_list_check = [s for s in all_sprites if s not in chain_ball_sprites]
+        if not shot_balls_list_check:
+            GAME_WON = True
 
     # --- Drawing ---
     screen.blit(background_image, (0, 0))
@@ -573,39 +631,6 @@ while running:
         pygame.draw.lines(screen, (80, 80, 80), False, scaled_path_points, scale_value(4))
 
     all_sprites.draw(screen)
-
-
-    # Delete 
-
-# --- Drawing ---
-    screen.blit(background_image, (0, 0))
-
-    if len(PATH_POINTS_BASE) > 2:
-        scaled_path_points = [scale_point(p) for p in PATH_POINTS_BASE]
-        pygame.draw.lines(screen, (80, 80, 80), False, scaled_path_points, scale_value(4))
-
-    all_sprites.draw(screen)
-
-    # <-- START DEBUG DRAWING -->
-    DEBUG_FRONT_COLOR = (255, 0, 0) # Red
-    DEBUG_BACK_COLOR = (0, 0, 255)  # Blue
-    DEBUG_SHOT_COLOR = (0, 255, 0)  # Green
-    DEBUG_HITBOX_WIDTH = 2 
-    
-    for ball in chain_ball_sprites:
-        pygame.draw.rect(screen, DEBUG_FRONT_COLOR, ball.front_hitbox, DEBUG_HITBOX_WIDTH)
-        pygame.draw.rect(screen, DEBUG_BACK_COLOR, ball.back_hitbox, DEBUG_HITBOX_WIDTH)
-    
-    # <-- CORRECTED INDENTATION HERE -->
-    for ball in shot_balls_list:
-        pygame.draw.rect(screen, DEBUG_SHOT_COLOR, ball.shot_hitbox, DEBUG_HITBOX_WIDTH)
-    # <-- END DEBUG DRAWING -->
-
-
-    launcher.draw(screen, chain_ball_sprites)
-    # ... rest of the drawing code ...
-
-    #
 
     launcher.draw(screen, chain_ball_sprites)
 
