@@ -73,7 +73,7 @@ def load_word_list(path, filename):
     file_path = os.path.join(path, filename)
 
     try:
-        with open(file_path, 'r') as f:
+        with open(file_path, 'r', encoding="utf-8") as f:
             for line in f:
                 word = line.strip().upper()
                 if len(word) == 5:
@@ -102,7 +102,6 @@ def random_letter():
 # --- Game Variables (all based on BASE_RESOLUTION) ---
 BALL_RADIUS_BASE = 30
 BALL_DIAMETER_BASE = BALL_RADIUS_BASE * 2
-# Note: HITBOX_SCALE_FACTOR is no longer used for chain balls
 HITBOX_SCALE_FACTOR_SHOT = 0.7 # For shot balls
 
 BALL_RADIUS = scale_value(BALL_RADIUS_BASE)
@@ -169,20 +168,20 @@ class Ball(pygame.sprite.Sprite):
         self.x_base, self.y_base = 0, 0
         self.rect = self.image.get_rect()
         
-        # <-- NEW HITBOX LOGIC -->
-        # We use the scaled BALL_RADIUS as the base for size/offset
-        self.hitbox_size = int(BALL_RADIUS * 0.8) # Hitbox is 80% of ball radius
-        self.hitbox_offset = int(BALL_RADIUS * 0.75) # Positioned 75% from center
-        
-        # These are the two new hitboxes
+        # --- CHAIN HITBOX LOGIC ---
+        self.hitbox_size = int(BALL_RADIUS * 0.8) 
+        self.hitbox_offset = int(BALL_RADIUS * 0.75) 
         self.front_hitbox = pygame.Rect(0, 0, self.hitbox_size, self.hitbox_size)
         self.back_hitbox = pygame.Rect(0, 0, self.hitbox_size, self.hitbox_size)
+        
+        # --- SHOT HITBOX LOGIC ---
+        self.collision_radius = scale_value(BALL_RADIUS_BASE * HITBOX_SCALE_FACTOR_SHOT)
+        shot_hitbox_size = int(self.collision_radius * 2)
+        self.shot_hitbox = pygame.Rect(0, 0, shot_hitbox_size, shot_hitbox_size)
         
         self.set_pos_from_path_index()
 
         self.dx, self.dy, self.speed = 0, 0, 0
-        # collision_radius is now only used for SHOT balls
-        self.collision_radius = scale_value(BALL_RADIUS_BASE * HITBOX_SCALE_FACTOR_SHOT)
 
 
     def re_render_image(self):
@@ -212,16 +211,16 @@ class Ball(pygame.sprite.Sprite):
             self.x_base, self.y_base = PATH_POINTS_BASE[idx]
 
         self.rect.center = scale_point((int(self.x_base), int(self.y_base)))
+        self.shot_hitbox.center = self.rect.center # Update shot hitbox too
 
-        # <-- NEW HITBOX UPDATE LOGIC -->
-        # Get stable direction vector
+        # --- HITBOX UPDATE LOGIC ---
         p1_idx = max(0, idx - int(BALL_SPACING_ON_PATH))
         p2_idx = min(len(PATH_POINTS_BASE) - 1, idx + int(BALL_SPACING_ON_PATH))
 
-        if p1_idx >= p2_idx: # Handle edges
+        if p1_idx >= p2_idx:
             p1_idx = max(0, len(PATH_POINTS_BASE) - 2)
             p2_idx = len(PATH_POINTS_BASE) - 1
-            if p1_idx >= p2_idx: # Handle path with < 2 points
+            if p1_idx >= p2_idx: 
                 p1_idx = 0; p2_idx = 0;
 
         p1 = scale_point(PATH_POINTS_BASE[p1_idx])
@@ -233,26 +232,28 @@ class Ball(pygame.sprite.Sprite):
         dist = math.hypot(dir_x, dir_y)
         ux, uy = 0, 0
         if dist > 0:
-            ux = dir_x / dist # Normalized "forward" X
-            uy = dir_y / dist # Normalized "forward" Y
+            ux = dir_x / dist
+            uy = dir_y / dist
         
-        # Calculate hitbox centers
         front_center_x = self.rect.centerx + ux * self.hitbox_offset
         front_center_y = self.rect.centery + uy * self.hitbox_offset
         
         back_center_x = self.rect.centerx - ux * self.hitbox_offset
         back_center_y = self.rect.centery - uy * self.hitbox_offset
         
-        # Update rects
         self.front_hitbox.center = (int(front_center_x), int(front_center_y))
         self.back_hitbox.center = (int(back_center_x), int(back_center_y))
-        # <-- END NEW HITBOX UPDATE LOGIC -->
 
 
     def update(self):
+        # This update is only for shot balls
         if self.speed > 0:
             self.rect.x += self.dx
             self.rect.y += self.dy
+            
+            # <-- ADDED: Update the shot hitbox as the ball moves -->
+            self.shot_hitbox.center = self.rect.center
+            
             if (self.rect.x < -BALL_DIAMETER or self.rect.x > WIDTH + BALL_DIAMETER or
                 self.rect.y < -BALL_DIAMETER or self.rect.y > HEIGHT + BALL_DIAMETER):
                 self.kill()
@@ -273,7 +274,7 @@ class Launcher:
     def draw(self, surface, all_chain_balls):
         mouse_x, mouse_y = pygame.mouse.get_pos()
         rel_x, rel_y = mouse_x - self.pos[0], mouse_y - self.pos[1]
-        angle_radians = math.atan2(-rel_y, rel_x) 
+        angle_radians = math.atan2(-rel_y, rel_x)
         angle_degrees = math.degrees(angle_radians)
 
         rotated_cannon_image = pygame.transform.rotate(self.base_image, angle_degrees - 90)
@@ -293,7 +294,6 @@ class Launcher:
                 current_x = laser_start_pos[0] + t * dx
                 current_y = laser_start_pos[1] + t * dy
                 for ball in all_chain_balls:
-                    # Laser can hit *either* hitbox
                     if ball.front_hitbox.collidepoint(current_x, current_y) or \
                        ball.back_hitbox.collidepoint(current_x, current_y):
                         laser_end_pos = (current_x, current_y)
@@ -324,7 +324,6 @@ def check_matches(chain, start_index):
     if not chain or len(chain) < 5:
         return 0, -1, -1
 
-    # Check words from "WHALE" (i=start_index-4) to "EPICS" (i=start_index)
     for i in range(max(0, start_index - 4), min(start_index + 1, len(chain) - 4)):
         if i + 5 > len(chain):
             continue
@@ -343,7 +342,7 @@ def check_matches(chain, start_index):
     return 0, -1, -1
 
 
-def update_chain_colors(chain): # <-- Takes a single chain
+def update_chain_colors(chain):
     """Iterates through the chain and colors it."""
     i = 0
     while i < len(chain):
@@ -390,15 +389,12 @@ def create_gap(chain, at_index, gap_size_base):
     """Pushes balls forward and backward from an index to create a gap."""
     half_gap = gap_size_base / 2.0
     
-    # Push head segment (0 to at_index-1) FORWARD
     for i in range(at_index):
         chain[i].path_index += half_gap
     
-    # Push tail segment (at_index to end) BACKWARD
     for i in range(at_index, len(chain)):
         chain[i].path_index -= half_gap
 
-    # All balls need their screen positions updated after moving
     for ball in chain:
         ball.set_pos_from_path_index()
 
@@ -498,19 +494,19 @@ while running:
         ball.set_pos_from_path_index()
 
     # --- Collision and Insertion Logic ---
-    # <-- REPLACED DOT-PRODUCT LOGIC WITH 2-HITBOX LOGIC -->
     for shot in shot_balls_list[:]:
         hit_ball = None
         hit_type = None # 'front' or 'back'
 
         # Manual collision check against our custom hitboxes
         for ball in chain_ball_sprites:
-            # Check back hitbox first
-            if ball.back_hitbox.colliderect(shot.rect):
+            
+            # Check against shot_hitbox instead of shot.rect
+            if ball.back_hitbox.colliderect(shot.shot_hitbox):
                 hit_ball = ball
                 hit_type = 'back'
                 break
-            elif ball.front_hitbox.colliderect(shot.rect):
+            elif ball.front_hitbox.colliderect(shot.shot_hitbox):
                 hit_ball = ball
                 hit_type = 'front'
                 break
@@ -521,27 +517,23 @@ while running:
             try:
                 ball_index = chain_list.index(hit_ball)
             except ValueError:
-                continue # Ball was already killed, e.g. by a previous shot
+                continue 
 
-            # NEW directional logic based on which box was hit
             if hit_type == 'back':
                 insert_at_index = ball_index + 1 # Insert AFTER
             else: # hit_type == 'front'
                 insert_at_index = ball_index # Insert BEFORE
 
-            # --- Gap Creation and Insertion (This logic is still good) ---
+            # --- Gap Creation and Insertion ---
             half_spacing = BALL_SPACING_ON_PATH / 2.0
 
-            # Case 1: Insert at the very head (index 0)
             if insert_at_index == 0:
                 shift_chain(chain_list, 0, BALL_SPACING_ON_PATH) 
                 new_path_index = chain_list[0].path_index + BALL_SPACING_ON_PATH 
             
-            # Case 2: Insert at the very tail (index len(chain))
             elif insert_at_index == len(chain_list):
                 new_path_index = chain_list[-1].path_index - BALL_SPACING_ON_PATH
             
-            # Case 3: Insert BETWEEN two balls
             else:
                 create_gap(chain_list, insert_at_index, BALL_SPACING_ON_PATH)
                 new_path_index = chain_list[insert_at_index - 1].path_index - BALL_SPACING_ON_PATH
@@ -565,11 +557,11 @@ while running:
                     del chain_list[start_idx : end_idx + 1]
 
                     if start_idx < len(chain_list):
-                        check_index = start_idx # Re-check at the snap point
+                        check_index = start_idx
                     else:
-                        break # Deleted at end
+                        break
                 else:
-                    break # No match found
+                    break
 
             update_chain_colors(chain_list)
 
@@ -595,23 +587,33 @@ while running:
     all_sprites.draw(screen)
 
     # <-- START DEBUG DRAWING -->
-    # <-- UPDATED to show new hitboxes -->
     DEBUG_FRONT_COLOR = (255, 0, 0) # Red
     DEBUG_BACK_COLOR = (0, 0, 255)  # Blue
-    DEBUG_HITBOX_WIDTH = 2 # Line thickness
+    DEBUG_SHOT_COLOR = (0, 255, 0)  # Green
+    DEBUG_HITBOX_WIDTH = 2 
+    
     for ball in chain_ball_sprites:
         pygame.draw.rect(screen, DEBUG_FRONT_COLOR, ball.front_hitbox, DEBUG_HITBOX_WIDTH)
         pygame.draw.rect(screen, DEBUG_BACK_COLOR, ball.back_hitbox, DEBUG_HITBOX_WIDTH)
     
-    # for ball in shot_balls_list:
-    # 	  pygame.draw.circle(screen, (0, 255, 0), ball.rect.center, ball.collision_radius, 1)
+    # <-- CORRECTED INDENTATION HERE -->
+    for ball in shot_balls_list:
+        pygame.draw.rect(screen, DEBUG_SHOT_COLOR, ball.shot_hitbox, DEBUG_HITBOX_WIDTH)
     # <-- END DEBUG DRAWING -->
 
+
+    launcher.draw(screen, chain_ball_sprites)
+    # ... rest of the drawing code ...
+
+    #
 
     launcher.draw(screen, chain_ball_sprites)
 
     score_text = GAME_FONT.render(f"Score: {SCORE}", True, WHITE)
     screen.blit(score_text, scale_point((20, 20)))
+
+    speed_text = GAME_FONT.render(f"Speed: {CHAIN_SPEED:.4f}", True, WHITE)
+    screen.blit(speed_text, scale_point((20, 60)))
 
     pygame.display.flip()
     clock.tick(FPS)
